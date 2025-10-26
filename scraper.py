@@ -1,7 +1,136 @@
 import re
 from urllib.parse import urlparse
+from urllib.parse import urljoin
+from urllib.parse import urlparse, urlunparse
+
+import configparser
+import time
+from urllib.robotparser import RobotFileParser
+
+from bs4 import BeautifulSoup
+import nltk
+
+from collections import Counter
+
+#nltk.download('stopwords')
+#nltk.download('punkt_tab')
+
+from nltk.stem import WordNetLemmatizer
+#nltk.download('wordnet')
+
+from nltk.corpus import stopwords
+import shelve
+
+import atexit
+
+config = configparser.ConfigParser()
+config.read("config.ini")
+USERAGENT = config.get("IDENTIFICATION", "USERAGENT", fallback="*")
+DEFAULT_DELAY = config.get("CRAWLER", "POLITENESS")
+
+STOPWORDS = set(stopwords.words('english'))
+
+PATTERNS = [
+    r".*\.ics\.uci\.edu/.*",
+    r".*\.cs\.uci\.edu/.*",
+    r".*\.informatics\.uci\.edu/.*",
+    r".*\.stat\.uci\.edu/.*"
+]
+
+INVALID_PATTERNS = [
+    re.compile(r".*/\d{4}/\d{2}/\d{2}/.*"),
+    re.compile(r".*/\d{2}/\d{2}/\d{4}/.*"),
+    re.compile(r".*/attachment/.*"),
+    re.compile(r".*img_.*")
+]
+
+
+SAVE_FILE = config.get("LOCAL PROPERTIES", "SAVE_2", fallback="crawler_data")
+
+save = shelve.open(SAVE_FILE)
+
+domain_delays = save.get("domain_delays", {})
+link_scanned_data = save.get("link_scanned_data", {})
+prefix_counter = save.get("prefix_counter", {})
+
+PREFIX_COUNTER_LIMIT = 100
+PREFIX_MAX_DEPTH = 2
+save_counter = 50
+MAX_TOKENS = 100
+
+lemmatizer = WordNetLemmatizer()
 
 def scraper(url, resp):
+    global save_counter
+    global lemmatizer
+    
+    parsed = urlparse(url)
+    delay = DEFAULT_DELAY
+
+    status = getattr(resp, "status", None)
+    if not resp or status != 200 or not getattr(resp, "raw_response", None):
+        print(f"Skipping {url} — invalid response (status={status})")
+        return []
+
+    if parsed.netloc in domain_delays:
+        delay = domain_delays[parsed.netloc]
+    else:
+        
+        robotsParsed =  f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+        rfp = RobotFileParser()
+        rfp.set_url(robotsParsed)
+        rfp.read()
+        delay = rfp.crawl_delay(USERAGENT)
+        if delay is None:
+            delay = DEFAULT_DELAY 
+        domain_delays[parsed.netloc] = delay
+
+    print(f"Crawl-delay for {USERAGENT}: {delay} seconds")
+    time.sleep(float(delay))
+
+    
+
+    # Second check: skip non-HTML content, but safely handle missing headers
+    if not (resp.raw_response and getattr(resp.raw_response, "headers", {}).get("Content-Type", "").startswith("text/html")):
+        print(f"Skipping non-HTML content: {url}")
+        return []
+        
+
+    normalized = normalize_url(url)
+
+    soup = BeautifulSoup(resp.raw_response.content, "lxml")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.extract()
+
+    text = soup.get_text(separator=" ")
+    tokens_pre_stop = nltk.tokenize.word_tokenize(text.lower())
+
+    filtered_tokens = []
+
+    for token in tokens_pre_stop:
+        token = token.lower()
+        if token.isalpha() and token not in STOPWORDS:
+            t = lemmatizer.lemmatize(token)
+            filtered_tokens.append(t)
+
+
+    if len(filtered_tokens) < 10:
+        return []
+
+    # Count frequencies
+    word_counts = Counter(filtered_tokens)
+
+    top_tokens = dict(word_counts.most_common(MAX_TOKENS))
+
+    # Store the compact dictionary of counts
+    link_scanned_data[url] = top_tokens
+
+    save_counter -= 1
+    if save_counter == 0:
+        save_counter = 50
+        save_data()
+        
+
     links = extract_next_links(url, resp)
     return [link for link in links if is_valid(link)]
 
@@ -15,7 +144,23 @@ def extract_next_links(url, resp):
     #         resp.raw_response.url: the url, again
     #         resp.raw_response.content: the content of the page!
     # Return a list with the hyperlinks (as strings) scrapped from resp.raw_response.content
-    return list()
+
+    links = []
+
+
+    soup = BeautifulSoup(resp.raw_response.content, "lxml")
+
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"]
+
+        potential_link = urljoin(resp.raw_response.url ,href) 
+
+        parsed = urlparse(potential_link)
+        defragged = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, ""))
+
+        links.append(normalize_url(defragged))
+
+    return links
 
 def is_valid(url):
     # Decide whether to crawl this url or not. 
@@ -25,6 +170,33 @@ def is_valid(url):
         parsed = urlparse(url)
         if parsed.scheme not in set(["http", "https"]):
             return False
+        
+        normalized = normalize_url(url)
+
+        if url in link_scanned_data:
+            return False
+
+        matches_patterns = False
+        for pattern in PATTERNS:
+            if re.match(pattern, normalized):
+                matches_patterns = True
+        if not matches_patterns:
+            return False
+        
+        for invalid_pattern in INVALID_PATTERNS:
+            if re.match(invalid_pattern, normalized):
+                return False
+        
+        prefix_depth = get_prefix_depth(normalized)
+        for i in range(1, min( prefix_depth , PREFIX_MAX_DEPTH) + 1):
+            key = get_url_prefix(normalized, i)
+            if key in prefix_counter:
+                prefix_counter[key] += 1
+                if prefix_counter[key] >= PREFIX_COUNTER_LIMIT:
+                    return False
+            else:
+                prefix_counter[key] = 1
+        
         return not re.match(
             r".*\.(css|js|bmp|gif|jpe?g|ico"
             + r"|png|tiff?|mid|mp2|mp3|mp4"
@@ -38,3 +210,39 @@ def is_valid(url):
     except TypeError:
         print ("TypeError for ", parsed)
         raise
+
+
+def normalize_url(url):
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc.lower()
+    path = re.sub(r"/+", "/", parsed.path)  # collapse multiple slashes
+    if path.endswith("/") and path != "/":
+        path = path[:-1]  # remove trailing slash
+    return urlunparse((scheme, netloc, path, "", "", ""))
+
+def get_url_prefix(url, depth):
+    parsed = urlparse(url)
+    parts = [p for p in parsed.path.strip("/").split("/") if p]
+    prefix = "/".join(parts[:depth])
+    normalized_netloc = parsed.netloc.lower()
+    return f"{normalized_netloc}/{prefix}" if prefix else normalized_netloc
+
+def get_prefix_depth(url):
+    parsed = urlparse(url)
+    parts = [p for p in parsed.path.strip("/").split("/") if p]
+    return len(parts)
+
+def save_data():
+    save["domain_delays"] = domain_delays
+    save["link_scanned_data"] = link_scanned_data
+    save["prefix_counter"] = prefix_counter
+    
+    save.sync()
+
+
+def close_shelf():
+    save_data()
+    save.close()
+
+atexit.register(close_shelf)
