@@ -21,7 +21,7 @@ def extract_next_links(url, resp):
     # Return a list with the hyperlinks (as strings) scrapped from resp.raw_response.content
     listOfLinks = []
     if resp.status >= 200 and resp.status <= 599 or resp.raw_response != None:
-        soup = BeautifulSoup(resp.raw_response.content, 'lxml')
+        soup = BeautifulSoup(resp.raw_response.content, 'lxml') 
         
         for anchor in soup.find_all('a', href=True):
             href = anchor["href"] 
