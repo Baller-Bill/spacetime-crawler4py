@@ -20,16 +20,22 @@ def extract_next_links(url, resp):
     #         resp.raw_response.content: the content of the page!
     # Return a list with the hyperlinks (as strings) scrapped from resp.raw_response.content
     listOfLinks = []
-    if resp.status >= 200 and resp.status <= 599 or resp.raw_response != None:
+    if resp.status == 200 or resp.raw_response != None:
         soup = BeautifulSoup(resp.raw_response.content, 'lxml') 
         
         for anchor in soup.find_all('a', href=True):
             href = anchor["href"] 
     
             potential_link = urljoin(resp.raw_response.url ,href) 
+            parsed_link = urlparse(potential_link)
+            modified_link = urlunparse((parsed_link.scheme, parsed_link.netloc, parsed_link.path, parsed_link.params, parsed_link.query, ""))
+
+            if re.match(r".*\.(.ics.uci.edu/|.ics.uci.edu"
+                + r"|.cs.uci.edu/|.cs.uci.edu"
+                + r"|.informatics.uci.edu/|.informatics.uci.edu"
+                + r"|.stat.uci.edu/|.stat.uci.edu)$", parsed_link.netloc.lower()):
             
-            
-            listOfLinks.append(potential_link)
+                listOfLinks.append(modified_link)
         
     return listOfLinks
 
