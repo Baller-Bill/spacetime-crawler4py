@@ -1,7 +1,6 @@
 import re
 from bs4 import BeautifulSoup
-import requests
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 def scraper(url, resp):
     links = extract_next_links(url, resp)
@@ -19,21 +18,25 @@ def extract_next_links(url, resp):
     # Return a list with the hyperlinks (as strings) scrapped from resp.raw_response.content
 
     # If response status is not 200-599 or raw_response is None, return an empty list
-    URLs = []
-    if resp.status < 200 or resp.status > 599 or resp.raw_response is None:
+    urls = []
+    if resp.status < 200 or resp.status >= 599 or resp.raw_response is None:
         return []
     
-    # Content is valid; parse it
-    soup = BeautifulSoup(resp.raw_content.content, 'html.parser')
+    try:
+        soup = BeautifulSoup(resp.raw_response.content, 'html.parser')
+    except Exception:
+        # If HTML parsing fails
+        return []
 
-    for link in soup.find_all('a'):
-        if is_valid(link):
-            href = link.get('href')
-            URLs.append(href)
-        else:
-            continue
+    # Extract all <a href="..."> links
+    for link in soup.find_all('a', href=True):
+        href = link.get('href')
+        if href:
+            # Convert relative URLs to absolute
+            absolute_url = urljoin(url, href)
+            urls.append(absolute_url)
 
-    return URLs
+    return urls
 
 def is_valid(url):
     # Decide whether to crawl this url or not. 
@@ -41,8 +44,41 @@ def is_valid(url):
     # There are already some conditions that return False.
     try:
         parsed = urlparse(url)
-        if parsed.scheme not in set(["http", "https"]):
+
+        if parsed.scheme not in {"http", "https"}:
             return False
+
+        domain = parsed.netloc.lower()
+        full_url = url.lower()
+        query = parsed.query.lower()
+        
+
+        # Only crawl UCI domains
+        if not re.match(
+            r".*\.(ics\.uci\.edu|cs\.uci\.edu|informatics\.uci\.edu|stat\.uci\.edu)$",
+            parsed.netloc.lower()
+        ):
+            return False
+        
+        if (
+            "intranet.ics.uci.edu" in domain  # private/internal site
+            or "doku.php" in path              # dynamic wiki engine
+            or "do=" in query                  # doku command parameter
+            or "tab_" in query                 # doku UI tab system
+            or "image=" in query               # image manager
+            or "ns=" in query                  # doku namespace
+            or "calendar" in full_url
+            or "ical" in full_url
+            or "tribe" in full_url
+            or "eppstein/pix" in full_url
+            or "wics.ics.uci.edu" in domain
+            or "ngs.ics.uci.edu" in domain
+        ):
+            return False
+        
+        if any(param in full_url for param in ["?share=", "?replytocom=", "?action="]):
+            return False
+        
         return not re.match(
             r".*\.(css|js|bmp|gif|jpe?g|ico"
             + r"|png|tiff?|mid|mp2|mp3|mp4"
@@ -53,6 +89,7 @@ def is_valid(url):
             + r"|thmx|mso|arff|rtf|jar|csv"
             + r"|rm|smil|wmv|swf|wma|zip|rar|gz)$", parsed.path.lower())
 
+        
     except TypeError:
-        print ("TypeError for ", parsed)
-        raise
+        print ("TypeError for ", url)
+        return False
