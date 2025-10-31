@@ -38,9 +38,8 @@ PATTERNS = [
 ]
 
 INVALID_DOMAINS = [
-    r"wics\.ics",
-    r"ngs\.ics"
 ]
+
 INVALID_PATTERNS = [
     re.compile(r".*/\d{4}/\d{2}/\d{2}/.*"),
     re.compile(r".*/\d{2}/\d{2}/\d{4}/.*"),
@@ -117,10 +116,10 @@ def scraper(url, resp):
     # Count frequencies
     word_counts = Counter(filtered_tokens)
 
-    top_tokens = dict(word_counts.most_common(MAX_TOKENS))
+    #top_tokens = dict(word_counts.most_common(MAX_TOKENS))
 
     # Store the compact dictionary of counts
-    link_scanned_data[url] = top_tokens
+    link_scanned_data[url] = word_counts
     url_frag_dict[url] = save_file_name
 
     sync_counter -= 1
