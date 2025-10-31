@@ -37,58 +37,55 @@ PATTERNS = [
     r".*\.stat\.uci\.edu/.*"
 ]
 
+INVALID_DOMAINS = [
+    r"wics\.ics",
+    r"ngs\.ics"
+]
 INVALID_PATTERNS = [
     re.compile(r".*/\d{4}/\d{2}/\d{2}/.*"),
     re.compile(r".*/\d{2}/\d{2}/\d{4}/.*"),
     re.compile(r".*/attachment/.*"),
-    re.compile(r".*img_.*")
+    re.compile(r".*img_.*"),
+    re.compile(r".*eppstein/pix.*")
 ]
-
-
-SAVE_FILE = config.get("LOCAL PROPERTIES", "SAVE_2", fallback="crawler_data")
-
-save = shelve.open(SAVE_FILE)
-
-domain_delays = save.get("domain_delays", {})
-link_scanned_data = save.get("link_scanned_data", {})
-prefix_counter = save.get("prefix_counter", {})
 
 PREFIX_COUNTER_LIMIT = 100
 PREFIX_MAX_DEPTH = 2
-save_counter = 50
+SAVE_COUNTER_D = 1000
+save_counter = SAVE_COUNTER_D
+sync_counter = 50
 MAX_TOKENS = 100
-
 lemmatizer = WordNetLemmatizer()
+
+SAVE_FILE = config.get("LOCAL PROPERTIES", "SAVE_2", fallback="crawler_data")
+save = shelve.open(SAVE_FILE)
+
+domain_delays = save.get("domain_delays", {})
+prefix_counter = save.get("prefix_counter", {})
+url_frag_dict = save.get("url_frag_dict", {})
+save_file_num = save.get("save_file_num",0)
+
+save_file_name = f"save_frags/save_frag_{save_file_num}.shelve" 
+
+current_save_frag = shelve.open(save_file_name)
+link_scanned_data = current_save_frag.get("link_scanned_data", {})
+
+
 
 def scraper(url, resp):
     global save_counter
+    global sync_counter
     global lemmatizer
-    
-    parsed = urlparse(url)
-    delay = DEFAULT_DELAY
+    global link_scanned_data   # <-- add this line
+    global current_save_frag
+    global save_file_name
+    global save_file_num
+    global SAVE_COUNTER_D
 
     status = getattr(resp, "status", None)
     if not resp or status != 200 or not getattr(resp, "raw_response", None):
         print(f"Skipping {url} — invalid response (status={status})")
         return []
-
-    if parsed.netloc in domain_delays:
-        delay = domain_delays[parsed.netloc]
-    else:
-        
-        robotsParsed =  f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-        rfp = RobotFileParser()
-        rfp.set_url(robotsParsed)
-        rfp.read()
-        delay = rfp.crawl_delay(USERAGENT)
-        if delay is None:
-            delay = DEFAULT_DELAY 
-        domain_delays[parsed.netloc] = delay
-
-    print(f"Crawl-delay for {USERAGENT}: {delay} seconds")
-    time.sleep(float(delay))
-
-    
 
     # Second check: skip non-HTML content, but safely handle missing headers
     if not (resp.raw_response and getattr(resp.raw_response, "headers", {}).get("Content-Type", "").startswith("text/html")):
@@ -124,11 +121,27 @@ def scraper(url, resp):
 
     # Store the compact dictionary of counts
     link_scanned_data[url] = top_tokens
+    url_frag_dict[url] = save_file_name
+
+    sync_counter -= 1
+
+    if sync_counter == 0:
+        sync_counter = 50
+        save_data()
+        current_save_frag["link_scanned_data"] = link_scanned_data
+        current_save_frag.sync()
 
     save_counter -= 1
     if save_counter == 0:
-        save_counter = 50
+        save_counter = SAVE_COUNTER_D
+
         save_data()
+        save_file_num += 1
+        save_frag_data() #will close current frag file
+
+        save_file_name = f"save_frags/save_frag_{save_file_num}.shelve" 
+        current_save_frag = shelve.open(save_file_name)
+        link_scanned_data = {}
         
 
     links = extract_next_links(url, resp)
@@ -173,7 +186,7 @@ def is_valid(url):
         
         normalized = normalize_url(url)
 
-        if url in link_scanned_data:
+        if url in url_frag_dict:
             return False
 
         matches_patterns = False
@@ -182,6 +195,11 @@ def is_valid(url):
                 matches_patterns = True
         if not matches_patterns:
             return False
+        
+        netloc = parsed.netloc.lower()
+        for invalid in INVALID_DOMAINS:
+            if re.search(invalid, netloc):
+                return False
         
         for invalid_pattern in INVALID_PATTERNS:
             if re.match(invalid_pattern, normalized):
@@ -211,7 +229,6 @@ def is_valid(url):
         print ("TypeError for ", parsed)
         raise
 
-
 def normalize_url(url):
     parsed = urlparse(url)
     scheme = parsed.scheme.lower()
@@ -234,15 +251,23 @@ def get_prefix_depth(url):
     return len(parts)
 
 def save_data():
-    save["domain_delays"] = domain_delays
-    save["link_scanned_data"] = link_scanned_data
+    global save, url_frag_dict, prefix_counter, save_file_num
+    #save["domain_delays"] = domain_delays
+    save["url_frag_dict"] = url_frag_dict
     save["prefix_counter"] = prefix_counter
-    
+    save["save_file_num"] = save_file_num
+
     save.sync()
 
+def save_frag_data():
+    global current_save_frag, link_scanned_data
+    current_save_frag["link_scanned_data"] = link_scanned_data
+    current_save_frag.sync()
+    current_save_frag.close()
 
 def close_shelf():
     save_data()
     save.close()
+    save_frag_data()
 
 atexit.register(close_shelf)
