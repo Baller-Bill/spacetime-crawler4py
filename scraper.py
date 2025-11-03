@@ -62,6 +62,7 @@ save = shelve.open(SAVE_FILE)
 domain_delays = save.get("domain_delays", {})
 prefix_counter = save.get("prefix_counter", {})
 url_frag_dict = save.get("url_frag_dict", {})
+url_total_words = save.get("url_total_words", {})
 save_file_num = save.get("save_file_num",0)
 
 save_file_name = f"save_frags/save_frag_{save_file_num}.shelve" 
@@ -75,7 +76,7 @@ def scraper(url, resp):
     global save_counter
     global sync_counter
     global lemmatizer
-    global link_scanned_data   # <-- add this line
+    global link_scanned_data
     global current_save_frag
     global save_file_name
     global save_file_num
@@ -84,11 +85,15 @@ def scraper(url, resp):
     status = getattr(resp, "status", None)
     if not resp or status != 200 or not getattr(resp, "raw_response", None):
         print(f"Skipping {url} — invalid response (status={status})")
+        url_frag_dict[url] = "none"
+        url_total_words[url] = -1
         return []
 
-    # Second check: skip non-HTML content, but safely handle missing headers
+    
     if not (resp.raw_response and getattr(resp.raw_response, "headers", {}).get("Content-Type", "").startswith("text/html")):
         print(f"Skipping non-HTML content: {url}")
+        url_frag_dict[url] = "none"
+        url_total_words[url] = -1
         return []
         
 
@@ -101,24 +106,27 @@ def scraper(url, resp):
     text = soup.get_text(separator=" ")
     tokens_pre_stop = nltk.tokenize.word_tokenize(text.lower())
 
+    url_total_words[url] = len(tokens_pre_stop)
+
     filtered_tokens = []
 
     for token in tokens_pre_stop:
         token = token.lower()
         if token.isalpha() and token not in STOPWORDS:
-            t = lemmatizer.lemmatize(token)
+            t = lemmatizer.lemmatize(token) #stem token
             filtered_tokens.append(t)
 
 
-    if len(filtered_tokens) < 10:
-        return []
+    #if len(filtered_tokens) < 5: #low information pages for now want to keep them all, can filter data later
+    #    return []
+    #    url_frag_dict[url] = "none"
+    #    url_total_words[url] = -1
 
-    # Count frequencies
+    #count frequencies
     word_counts = Counter(filtered_tokens)
 
     #top_tokens = dict(word_counts.most_common(MAX_TOKENS))
 
-    # Store the compact dictionary of counts
     link_scanned_data[url] = word_counts
     url_frag_dict[url] = save_file_name
 
@@ -232,9 +240,9 @@ def normalize_url(url):
     parsed = urlparse(url)
     scheme = parsed.scheme.lower()
     netloc = parsed.netloc.lower()
-    path = re.sub(r"/+", "/", parsed.path)  # collapse multiple slashes
+    path = re.sub(r"/+", "/", parsed.path)
     if path.endswith("/") and path != "/":
-        path = path[:-1]  # remove trailing slash
+        path = path[:-1]
     return urlunparse((scheme, netloc, path, "", "", ""))
 
 def get_url_prefix(url, depth):
@@ -250,11 +258,12 @@ def get_prefix_depth(url):
     return len(parts)
 
 def save_data():
-    global save, url_frag_dict, prefix_counter, save_file_num
+    global save, url_frag_dict,url_total_words,  prefix_counter, save_file_num
     #save["domain_delays"] = domain_delays
     save["url_frag_dict"] = url_frag_dict
     save["prefix_counter"] = prefix_counter
     save["save_file_num"] = save_file_num
+    save["url_total_words"] = url_total_words
 
     save.sync()
 
