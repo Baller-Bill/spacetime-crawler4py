@@ -1,7 +1,7 @@
 import re
 from urllib.parse import urlparse
 from urllib.parse import urljoin
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 import configparser
 import time
@@ -48,8 +48,8 @@ INVALID_PATTERNS = [
     re.compile(r".*eppstein/pix.*")
 ]
 
-PREFIX_COUNTER_LIMIT = 100
-PREFIX_MAX_DEPTH = 2
+PREFIX_COUNTER_LIMIT = 500
+PREFIX_MAX_DEPTH = 3
 SAVE_COUNTER_D = 1000
 save_counter = SAVE_COUNTER_D
 sync_counter = 50
@@ -90,8 +90,10 @@ def scraper(url, resp):
         return []
 
     
-    if not (resp.raw_response and getattr(resp.raw_response, "headers", {}).get("Content-Type", "").startswith("text/html")):
-        print(f"Skipping non-HTML content: {url}")
+    content_type = getattr(resp.raw_response, "headers", {}).get("Content-Type", "").lower()
+
+    if not (resp.raw_response and (content_type.startswith("text/html") or content_type.startswith("text/plain"))):
+        print(f"Skipping non-text content: {url} (type={content_type})")
         url_frag_dict[url] = "none"
         url_total_words[url] = -1
         return []
@@ -243,7 +245,13 @@ def normalize_url(url):
     path = re.sub(r"/+", "/", parsed.path)
     if path.endswith("/") and path != "/":
         path = path[:-1]
-    return urlunparse((scheme, netloc, path, "", "", ""))
+    
+    original_query = parsed.query
+    query_pairs = parse_qsl(original_query)
+    sorted_query_pairs = sorted(query_pairs, key=lambda pair: pair[0]) #sort alphabetically by query param name
+    sorted_query = urlencode(sorted_query_pairs)
+
+    return urlunparse((scheme, netloc, path, "", sorted_query, ""))
 
 def get_url_prefix(url, depth):
     parsed = urlparse(url)

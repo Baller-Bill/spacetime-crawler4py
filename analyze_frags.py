@@ -52,12 +52,19 @@ for i in range(0,last_frag_file_num + 1):
 
     link_scanned_data = frag_save.get("link_scanned_data", {})
 
-    for token_dict in link_scanned_data.values():
+    for key, token_dict in link_scanned_data.items():
+
+        if len(token_dict.keys()) < 15:
+            continue
+
         for token, freq in token_dict.items():
             if token not in most_common_tokens_dict:
                 most_common_tokens_dict[token] = freq
             else:
                 most_common_tokens_dict[token] += freq
+            
+            if token == "markellekelly":
+                print(f"Markelle Kelly URL: {key}")
     #print()
 
 
